@@ -98,6 +98,7 @@
     <string name="destination_downloads">Downloads</string>
     <string name="destination_friends">Friends</string>
     <string name="downloads_empty">No active downloads</string>
+    <string name="downloads_overview_subtitle">Track active, paused, and resumable downloads</string>
     <string name="downloads_cancel_confirm">Cancel download and delete files for %1$s?</string>
 
     <!-- Library Tabs -->

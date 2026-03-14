@@ -1,9 +1,13 @@
 package app.gamenative.ui.screen.settings
 
+import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -23,8 +27,11 @@ import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteForever
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
@@ -36,6 +43,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -45,6 +53,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -58,44 +67,154 @@ import app.gamenative.ui.theme.PluviaTheme
 import app.gamenative.ui.util.SnackbarManager
 import app.gamenative.utils.ContainerStorageManager
 import app.gamenative.utils.StorageUtils
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import timber.log.Timber
 
-@Composable
-fun ContainerStorageManagerDialog(
-    visible: Boolean,
-    onDismissRequest: () -> Unit,
+@Stable
+class ContainerStorageManagerUiState internal constructor(
+    private val appContext: Context,
+    private val scope: CoroutineScope,
 ) {
-    if (!visible) return
+    var entries by mutableStateOf<List<ContainerStorageManager.Entry>>(emptyList())
+        private set
 
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val scope = rememberCoroutineScope()
-    var entries by remember { mutableStateOf<List<ContainerStorageManager.Entry>>(emptyList()) }
-    var isLoading by remember { mutableStateOf(true) }
-    var pendingRemoval by remember { mutableStateOf<ContainerStorageManager.Entry?>(null) }
-    var pendingUninstall by remember { mutableStateOf<ContainerStorageManager.Entry?>(null) }
-    var movingEntryName by remember { mutableStateOf<String?>(null) }
-    var moveProgress by remember { mutableFloatStateOf(0f) }
-    var moveCurrentFile by remember { mutableStateOf("") }
-    var moveMovedFiles by remember { mutableIntStateOf(0) }
-    var moveTotalFiles by remember { mutableIntStateOf(0) }
+    var isLoading by mutableStateOf(false)
+        private set
 
-    suspend fun reloadEntries() {
-        isLoading = true
-        entries = ContainerStorageManager.loadEntries(context)
-        isLoading = false
+    var hasLoaded by mutableStateOf(false)
+        private set
+
+    var pendingRemoval by mutableStateOf<ContainerStorageManager.Entry?>(null)
+        private set
+
+    var pendingUninstall by mutableStateOf<ContainerStorageManager.Entry?>(null)
+        private set
+
+    var movingEntryName by mutableStateOf<String?>(null)
+        private set
+
+    var moveProgress by mutableFloatStateOf(0f)
+        private set
+
+    var moveCurrentFile by mutableStateOf("")
+        private set
+
+    var moveMovedFiles by mutableIntStateOf(0)
+        private set
+
+    var moveTotalFiles by mutableIntStateOf(0)
+        private set
+
+    val isMoving: Boolean
+        get() = movingEntryName != null
+
+    fun ensureLoaded() {
+        if (!hasLoaded && !isLoading) {
+            refresh()
+        }
     }
 
-    LaunchedEffect(Unit) {
-        reloadEntries()
+    fun refresh() {
+        if (isLoading) return
+
+        scope.launch {
+            isLoading = true
+            runCatching {
+                ContainerStorageManager.loadEntries(appContext)
+            }.onSuccess {
+                entries = it
+                hasLoaded = true
+            }.onFailure { error ->
+                hasLoaded = true
+                Timber.e(error, "Failed to load storage inventory")
+                SnackbarManager.show(
+                    error.message ?: appContext.getString(R.string.container_storage_unknown_error),
+                )
+            }
+            isLoading = false
+        }
     }
 
-    fun startMove(entry: ContainerStorageManager.Entry, target: ContainerStorageManager.MoveTarget) {
+    fun requestRemove(entry: ContainerStorageManager.Entry) {
+        if (isMoving) return
+        pendingRemoval = entry
+    }
+
+    fun dismissRemove() {
+        pendingRemoval = null
+    }
+
+    fun confirmRemove() {
+        val entry = pendingRemoval ?: return
+        pendingRemoval = null
+        val entryName = entry.displayName.ifBlank {
+            appContext.getString(R.string.container_storage_unknown_container)
+        }
+
+        scope.launch {
+            val removed = ContainerStorageManager.removeContainer(appContext, entry.containerId)
+            if (removed) {
+                SnackbarManager.show(
+                    appContext.getString(R.string.container_storage_remove_success, entryName),
+                )
+                refresh()
+            } else {
+                SnackbarManager.show(appContext.getString(R.string.container_storage_remove_failed))
+            }
+        }
+    }
+
+    fun requestUninstall(entry: ContainerStorageManager.Entry) {
+        if (isMoving) return
+        pendingUninstall = entry
+    }
+
+    fun dismissUninstall() {
+        pendingUninstall = null
+    }
+
+    fun confirmUninstall() {
+        val entry = pendingUninstall ?: return
+        pendingUninstall = null
+        val entryName = entry.displayName.ifBlank {
+            appContext.getString(R.string.container_storage_unknown_container)
+        }
+
+        scope.launch {
+            val result = ContainerStorageManager.uninstallGameAndContainer(appContext, entry)
+            if (result.isSuccess) {
+                SnackbarManager.show(
+                    appContext.getString(R.string.container_storage_uninstall_success, entryName),
+                )
+                refresh()
+            } else {
+                SnackbarManager.show(
+                    appContext.getString(
+                        R.string.container_storage_uninstall_failed,
+                        result.exceptionOrNull()?.message
+                            ?: appContext.getString(R.string.container_storage_unknown_error),
+                    ),
+                )
+            }
+        }
+    }
+
+    fun startMove(
+        entry: ContainerStorageManager.Entry,
+        target: ContainerStorageManager.MoveTarget,
+    ) {
+        if (isMoving) return
+
         if (!ContainerStorageManager.isExternalStorageConfigured()) {
-            SnackbarManager.show(context.getString(R.string.container_storage_move_external_disabled))
+            SnackbarManager.show(appContext.getString(R.string.container_storage_move_external_disabled))
             return
         }
 
-        val entryName = entry.displayName.ifBlank { context.getString(R.string.container_storage_unknown_container) }
+        val entryName = entry.displayName.ifBlank {
+            appContext.getString(R.string.container_storage_unknown_container)
+        }
+
         movingEntryName = entryName
         moveProgress = 0f
         moveCurrentFile = entryName
@@ -104,7 +223,7 @@ fun ContainerStorageManagerDialog(
 
         scope.launch {
             val result = ContainerStorageManager.moveGame(
-                context = context,
+                context = appContext,
                 entry = entry,
                 target = target,
                 onProgressUpdate = { currentFile, fileProgress, movedFiles, totalFiles ->
@@ -119,10 +238,10 @@ fun ContainerStorageManagerDialog(
 
             if (result.isSuccess) {
                 SnackbarManager.show(
-                    context.getString(
+                    appContext.getString(
                         R.string.container_storage_move_success,
                         entryName,
-                        context.getString(
+                        appContext.getString(
                             if (target == ContainerStorageManager.MoveTarget.EXTERNAL) {
                                 R.string.container_storage_location_external
                             } else {
@@ -131,42 +250,47 @@ fun ContainerStorageManagerDialog(
                         ),
                     ),
                 )
-                reloadEntries()
+                refresh()
             } else {
                 SnackbarManager.show(
-                    context.getString(
+                    appContext.getString(
                         R.string.container_storage_move_failed,
                         entryName,
-                        result.exceptionOrNull()?.message ?: context.getString(R.string.container_storage_unknown_error),
+                        result.exceptionOrNull()?.message
+                            ?: appContext.getString(R.string.container_storage_unknown_error),
                     ),
                 )
             }
         }
     }
+}
 
-    pendingRemoval?.let { entry ->
-        val entryName = entry.displayName.ifBlank { context.getString(R.string.container_storage_unknown_container) }
+@Composable
+fun rememberContainerStorageManagerUiState(): ContainerStorageManagerUiState {
+    val context = LocalContext.current.applicationContext
+    val scope = rememberCoroutineScope()
+    return remember(context, scope) {
+        ContainerStorageManagerUiState(
+            appContext = context,
+            scope = scope,
+        )
+    }
+}
+
+@Composable
+fun ContainerStorageManagerTransientUi(
+    state: ContainerStorageManagerUiState,
+) {
+    state.pendingRemoval?.let { entry ->
+        val entryName = entry.displayName.ifBlank {
+            stringResource(R.string.container_storage_unknown_container)
+        }
         AlertDialog(
-            onDismissRequest = { pendingRemoval = null },
+            onDismissRequest = state::dismissRemove,
             title = { Text(stringResource(R.string.container_storage_remove_title)) },
             text = { Text(stringResource(R.string.container_storage_remove_message, entryName)) },
             confirmButton = {
-                TextButton(
-                    onClick = {
-                        pendingRemoval = null
-                        scope.launch {
-                            val removed = ContainerStorageManager.removeContainer(context, entry.containerId)
-                            if (removed) {
-                                SnackbarManager.show(
-                                    context.getString(R.string.container_storage_remove_success, entryName),
-                                )
-                                reloadEntries()
-                            } else {
-                                SnackbarManager.show(context.getString(R.string.container_storage_remove_failed))
-                            }
-                        }
-                    },
-                ) {
+                TextButton(onClick = state::confirmRemove) {
                     Text(
                         text = stringResource(R.string.container_storage_remove_button),
                         color = MaterialTheme.colorScheme.error,
@@ -174,17 +298,19 @@ fun ContainerStorageManagerDialog(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { pendingRemoval = null }) {
+                TextButton(onClick = state::dismissRemove) {
                     Text(stringResource(R.string.cancel))
                 }
             },
         )
     }
 
-    pendingUninstall?.let { entry ->
-        val entryName = entry.displayName.ifBlank { context.getString(R.string.container_storage_unknown_container) }
+    state.pendingUninstall?.let { entry ->
+        val entryName = entry.displayName.ifBlank {
+            stringResource(R.string.container_storage_unknown_container)
+        }
         AlertDialog(
-            onDismissRequest = { pendingUninstall = null },
+            onDismissRequest = state::dismissUninstall,
             title = {
                 Text(
                     stringResource(
@@ -209,27 +335,7 @@ fun ContainerStorageManagerDialog(
                 )
             },
             confirmButton = {
-                TextButton(
-                    onClick = {
-                        pendingUninstall = null
-                        scope.launch {
-                            val result = ContainerStorageManager.uninstallGameAndContainer(context, entry)
-                            if (result.isSuccess) {
-                                SnackbarManager.show(
-                                    context.getString(R.string.container_storage_uninstall_success, entryName),
-                                )
-                                reloadEntries()
-                            } else {
-                                SnackbarManager.show(
-                                    context.getString(
-                                        R.string.container_storage_uninstall_failed,
-                                        result.exceptionOrNull()?.message ?: "Unknown error",
-                                    ),
-                                )
-                            }
-                        }
-                    },
-                ) {
+                TextButton(onClick = state::confirmUninstall) {
                     Text(
                         text = stringResource(R.string.container_storage_uninstall_button),
                         color = MaterialTheme.colorScheme.error,
@@ -237,25 +343,168 @@ fun ContainerStorageManagerDialog(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { pendingUninstall = null }) {
+                TextButton(onClick = state::dismissUninstall) {
                     Text(stringResource(R.string.cancel))
                 }
             },
         )
     }
 
-    if (movingEntryName != null) {
+    if (state.isMoving) {
         GameMigrationDialog(
-            progress = moveProgress,
-            currentFile = moveCurrentFile,
-            movedFiles = moveMovedFiles,
-            totalFiles = moveTotalFiles,
+            progress = state.moveProgress,
+            currentFile = state.moveCurrentFile,
+            movedFiles = state.moveMovedFiles,
+            totalFiles = state.moveTotalFiles,
         )
     }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun ContainerStorageManagerContent(
+    state: ContainerStorageManagerUiState,
+    modifier: Modifier = Modifier,
+    onDismissRequest: (() -> Unit)? = null,
+) {
+    LaunchedEffect(state) {
+        state.ensureLoaded()
+    }
+
+    Column(
+        modifier = modifier.fillMaxSize(),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = stringResource(R.string.settings_storage_manage_title),
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    text = stringResource(R.string.settings_storage_manage_subtitle),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = PluviaTheme.colors.textMuted,
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = if (state.isLoading && !state.hasLoaded) {
+                        stringResource(R.string.container_storage_loading)
+                    } else {
+                        stringResource(
+                            R.string.container_storage_summary,
+                            state.entries.size,
+                            StorageUtils.formatBinarySize(inventorySummaryBytes(state.entries)),
+                        )
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            if (onDismissRequest != null) {
+                IconButton(
+                    onClick = onDismissRequest,
+                    enabled = !state.isMoving,
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = stringResource(R.string.close),
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+        Spacer(modifier = Modifier.height(16.dp))
+
+        when {
+            state.isLoading && state.entries.isEmpty() -> {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        CircularProgressIndicator()
+                        Text(
+                            text = stringResource(R.string.container_storage_loading),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+
+            state.entries.isEmpty() -> {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Storage,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
+                            modifier = Modifier.size(64.dp),
+                        )
+                        Text(
+                            text = stringResource(R.string.container_storage_empty),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                        )
+                    }
+                }
+            }
+
+            else -> {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    contentPadding = PaddingValues(bottom = 24.dp),
+                ) {
+                    items(state.entries, key = { it.containerId }) { entry ->
+                        StorageEntryCard(
+                            entry = entry,
+                            actionsEnabled = !state.isMoving,
+                            onMoveToExternal = {
+                                state.startMove(entry, ContainerStorageManager.MoveTarget.EXTERNAL)
+                            },
+                            onMoveToInternal = {
+                                state.startMove(entry, ContainerStorageManager.MoveTarget.INTERNAL)
+                            },
+                            onRemove = { state.requestRemove(entry) },
+                            onUninstall = { state.requestUninstall(entry) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ContainerStorageManagerDialog(
+    visible: Boolean,
+    onDismissRequest: () -> Unit,
+    state: ContainerStorageManagerUiState = rememberContainerStorageManagerUiState(),
+) {
+    if (!visible) return
+
+    ContainerStorageManagerTransientUi(state)
 
     Dialog(
         onDismissRequest = {
-            if (movingEntryName == null) {
+            if (!state.isMoving) {
                 onDismissRequest()
             }
         },
@@ -277,128 +526,47 @@ fun ContainerStorageManagerDialog(
                 color = MaterialTheme.colorScheme.surface,
                 tonalElevation = 6.dp,
             ) {
-                Column(
+                ContainerStorageManagerContent(
+                    state = state,
                     modifier = Modifier
                         .fillMaxSize()
                         .background(PluviaTheme.colors.surfacePanel)
                         .padding(20.dp),
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = stringResource(R.string.container_storage_title),
-                                style = MaterialTheme.typography.headlineSmall,
-                                fontWeight = FontWeight.Bold,
-                            )
-                            Text(
-                                text = if (isLoading) {
-                                    stringResource(R.string.container_storage_loading)
-                                } else {
-                                    stringResource(
-                                        R.string.container_storage_summary,
-                                        entries.size,
-                                        StorageUtils.formatBinarySize(inventorySummaryBytes(entries)),
-                                    )
-                                },
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        IconButton(
-                            onClick = onDismissRequest,
-                            enabled = movingEntryName == null,
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = stringResource(R.string.close),
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-                    HorizontalDivider()
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    when {
-                        isLoading -> {
-                            Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Column(
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                                ) {
-                                    CircularProgressIndicator()
-                                    Text(
-                                        text = stringResource(R.string.container_storage_loading),
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            }
-                        }
-
-                        entries.isEmpty() -> {
-                            Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Text(
-                                    text = stringResource(R.string.container_storage_empty),
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }
-
-                        else -> {
-                            LazyColumn(
-                                modifier = Modifier.fillMaxSize(),
-                                verticalArrangement = Arrangement.spacedBy(10.dp),
-                            ) {
-                                items(entries, key = { it.containerId }) { entry ->
-                                    ContainerStorageRow(
-                                        entry = entry,
-                                        onMoveToExternal = { startMove(entry, ContainerStorageManager.MoveTarget.EXTERNAL) },
-                                        onMoveToInternal = { startMove(entry, ContainerStorageManager.MoveTarget.INTERNAL) },
-                                        onRemove = { pendingRemoval = entry },
-                                        onUninstall = { pendingUninstall = entry },
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
+                    onDismissRequest = onDismissRequest,
+                )
             }
         }
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ContainerStorageRow(
+private fun StorageEntryCard(
     entry: ContainerStorageManager.Entry,
+    actionsEnabled: Boolean,
     onMoveToExternal: () -> Unit,
     onMoveToInternal: () -> Unit,
     onRemove: () -> Unit,
     onUninstall: () -> Unit,
 ) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val displayName = entry.displayName.ifBlank { stringResource(R.string.container_storage_unknown_container) }
+    val context = LocalContext.current
+    val displayName = entry.displayName.ifBlank {
+        stringResource(R.string.container_storage_unknown_container)
+    }
     val storageLocation = ContainerStorageManager.getStorageLocation(context, entry)
     val canMoveToExternal = ContainerStorageManager.canMoveToExternal(context, entry)
     val canMoveToInternal = ContainerStorageManager.canMoveToInternal(context, entry)
 
-    Surface(
+    Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        tonalElevation = 2.dp,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+        ),
+        shape = RoundedCornerShape(16.dp),
     ) {
-        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
+        Column(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+        ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -408,6 +576,7 @@ private fun ContainerStorageRow(
                     Text(
                         text = displayName,
                         style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -421,6 +590,7 @@ private fun ContainerStorageRow(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
+
                 entry.combinedSizeBytes?.let {
                     MetadataChip(
                         text = StorageUtils.formatBinarySize(it),
@@ -430,81 +600,82 @@ private fun ContainerStorageRow(
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    MetadataChip(
-                        text = gameSourceLabel(entry.gameSource),
-                        containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
-                        contentColor = MaterialTheme.colorScheme.onSurface,
-                    )
-                    MetadataChip(
-                        text = statusLabel(entry.status),
-                        containerColor = statusContainerColor(entry.status),
-                        contentColor = statusContentColor(entry.status),
-                    )
-                    if (storageLocation != ContainerStorageManager.StorageLocation.UNKNOWN) {
-                        MetadataChip(
-                            text = storageLocationLabel(storageLocation),
-                            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-                        )
-                    }
-                }
-
-                Text(
-                    text = sizeBreakdown(entry),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                MetadataChip(
+                    text = gameSourceLabel(entry.gameSource),
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    contentColor = MaterialTheme.colorScheme.onSurface,
                 )
+                MetadataChip(
+                    text = statusLabel(entry.status),
+                    containerColor = statusContainerColor(entry.status),
+                    contentColor = statusContentColor(entry.status),
+                )
+                if (storageLocation != ContainerStorageManager.StorageLocation.UNKNOWN) {
+                    MetadataChip(
+                        text = storageLocationLabel(storageLocation),
+                        containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-            ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                text = sizeBreakdown(entry),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            if (canMoveToExternal || canMoveToInternal || entry.canUninstallGame || entry.hasContainer) {
+                Spacer(modifier = Modifier.height(14.dp))
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     if (canMoveToExternal) {
-                        SquircleActionButton(
+                        StorageActionButton(
                             text = stringResource(R.string.container_storage_move_to_external_button),
                             icon = Icons.Default.ArrowDownward,
                             onClick = onMoveToExternal,
+                            enabled = actionsEnabled,
                             containerColor = MaterialTheme.colorScheme.secondaryContainer,
                             contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
                         )
                     }
                     if (canMoveToInternal) {
-                        SquircleActionButton(
+                        StorageActionButton(
                             text = stringResource(R.string.container_storage_move_to_internal_button),
                             icon = Icons.Default.ArrowUpward,
                             onClick = onMoveToInternal,
+                            enabled = actionsEnabled,
                             containerColor = MaterialTheme.colorScheme.secondaryContainer,
                             contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
                         )
                     }
                     if (entry.canUninstallGame) {
-                        SquircleActionButton(
+                        StorageActionButton(
                             text = stringResource(R.string.container_storage_uninstall_button),
                             icon = Icons.Default.DeleteForever,
                             onClick = onUninstall,
+                            enabled = actionsEnabled,
                             containerColor = MaterialTheme.colorScheme.errorContainer,
                             contentColor = MaterialTheme.colorScheme.onErrorContainer,
                         )
                     }
                     if (entry.hasContainer) {
-                        SquircleActionButton(
+                        StorageActionButton(
                             text = stringResource(R.string.container_storage_remove_button),
                             icon = Icons.Default.Delete,
                             onClick = onRemove,
+                            enabled = actionsEnabled,
                             containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
                             contentColor = MaterialTheme.colorScheme.onSurface,
                         )
@@ -516,15 +687,17 @@ private fun ContainerStorageRow(
 }
 
 @Composable
-private fun SquircleActionButton(
+private fun StorageActionButton(
     text: String,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     onClick: () -> Unit,
+    enabled: Boolean,
     containerColor: androidx.compose.ui.graphics.Color,
     contentColor: androidx.compose.ui.graphics.Color,
 ) {
     FilledTonalButton(
         onClick = onClick,
+        enabled = enabled,
         shape = RoundedCornerShape(16.dp),
         colors = ButtonDefaults.filledTonalButtonColors(
             containerColor = containerColor,
