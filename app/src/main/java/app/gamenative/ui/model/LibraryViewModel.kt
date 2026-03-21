@@ -11,7 +11,6 @@ import app.gamenative.PluviaApp
 import app.gamenative.PrefManager
 import app.gamenative.data.GameCompatibilityStatus
 import app.gamenative.data.GameSource
-import app.gamenative.enums.OSArch
 import app.gamenative.data.LibraryItem
 import app.gamenative.data.SteamApp
 import app.gamenative.events.AndroidEvent
@@ -431,24 +430,12 @@ class LibraryViewModel @Inject constructor(
             val licensedDepotMap = SteamService.buildLicensedDepotMap(filteredSteamApps)
             val steamEntries: List<LibraryEntry> = filteredSteamApps.map { item ->
                 val isInstalled = downloadDirectorySet.contains(SteamService.getAppDirName(item))
-                // mirror SteamService depot filtering: license, OS, arch, deck, base-game only
+                // base-game size: ownedDlc=emptyMap excludes DLC depots
                 val licensedDepots = licensedDepotMap[item.id]
-                val eligible = item.depots.values.filter { d ->
-                    d.isWindowsCompatible &&
-                        d.dlcAppId == SteamService.INVALID_APP_ID &&
-                        (licensedDepots == null || d.depotId in licensedDepots) &&
-                        d.manifests.isNotEmpty()
+                val resolved = SteamService.resolveDownloadableDepots(item.depots, "", emptyMap(), licensedDepots)
+                val totalSizeBytes = resolved.values.sumOf { depot ->
+                    depot.manifests["public"]?.size ?: depot.manifests.values.firstOrNull()?.size ?: 0L
                 }
-                val has64Bit = eligible.any { it.osArch == OSArch.Arch64 }
-                val hasNonDeckWin = eligible.any { !it.steamDeck && it.isWindowsCompatible }
-                val totalSizeBytes = eligible
-                    .filter { d ->
-                        (d.osArch == OSArch.Arch64 || d.osArch == OSArch.Unknown || (!has64Bit && d.osArch == OSArch.Arch32)) &&
-                            !(d.steamDeck && hasNonDeckWin)
-                    }
-                    .sumOf { depot ->
-                        depot.manifests["public"]?.size ?: depot.manifests.values.firstOrNull()?.size ?: 0L
-                    }
                 LibraryEntry(
                     item = LibraryItem(
                         index = 0, // temporary, will be re-indexed after combining and paginating
