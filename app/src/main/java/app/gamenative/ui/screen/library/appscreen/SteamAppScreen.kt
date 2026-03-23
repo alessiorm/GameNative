@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Environment
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -28,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.core.content.ContextCompat
 import app.gamenative.PluviaApp
 
@@ -69,6 +71,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import app.gamenative.ui.component.dialog.GameManagerDialog
+import app.gamenative.ui.theme.PluviaTheme
 import app.gamenative.ui.screen.library.GameMigrationDialog
 import app.gamenative.ui.component.dialog.state.GameManagerDialogState
 import app.gamenative.ui.util.SnackbarManager
@@ -1100,7 +1103,7 @@ class SteamAppScreen : BaseAppScreen() {
                     val branch = SteamService.getInstalledApp(gameId)?.branch ?: "public"
                     val availableBytes = StorageUtils.getAvailableSpace(SteamService.defaultStoragePath)
                     val downloadBytes = depots.values.sumOf {
-                        SteamUtils.getDownloadBytes(it.manifests[branch]) master
+                        SteamUtils.getDownloadBytes(it.manifests[branch])
                     }
                     val installBytes = depots.values.sumOf { it.manifests[branch]?.size ?: 0 }
                     InstallSizeInfo(
@@ -1426,133 +1429,171 @@ class SteamAppScreen : BaseAppScreen() {
             val currentBranch = remember(gameId) {
                 SteamService.getInstalledApp(gameId)?.branch ?: "public"
             }
-            var selectedBranch by remember(gameId) { mutableStateOf(currentBranch) }
-
-            var privateBranchPassword by remember { mutableStateOf("") }
-            var privateBranchPasswordError by remember { mutableStateOf(false) }
-            var privateBranchPasswordSuccess by remember { mutableStateOf(false) }
-            var privateBranchPasswordChecking by remember { mutableStateOf(false) }
-            val coroutineScope = rememberCoroutineScope()
-
-            @OptIn(ExperimentalMaterial3Api::class)
-            AlertDialog(
+            SteamChangeBranchDialog(
+                availableBranches = availableBranches,
+                currentBranch = currentBranch,
+                onCheckPassword = { password ->
+                    val result = SteamService.checkPrivateBranchPassword(gameId, password)
+                    if (result.isNotEmpty()) {
+                        val branches = SteamService.getSteamUnlockedBranches(gameId).map { it.branchName }
+                        steamUnlockedBranchNames = branches
+                        branches
+                    } else {
+                        emptyList()
+                    }
+                },
+                onConfirm = { selectedBranch ->
+                    hideBranchDialog(gameId)
+                    MarkerUtils.removeMarker(getAppDirPath(gameId), Marker.STEAM_DLL_REPLACED)
+                    MarkerUtils.removeMarker(getAppDirPath(gameId), Marker.STEAM_DLL_RESTORED)
+                    MarkerUtils.removeMarker(getAppDirPath(gameId), Marker.STEAM_COLDCLIENT_USED)
+                    CoroutineScope(Dispatchers.IO).launch {
+                        val container = ContainerUtils.getOrCreateContainer(context, libraryItem.appId)
+                        val dlcAppIds = SteamService.getInstalledApp(gameId)
+                            ?.dlcDepots.orEmpty()
+                        SteamService.downloadApp(
+                            gameId,
+                            dlcAppIds,
+                            branch = selectedBranch,
+                            isUpdateOrVerify = true,
+                        )
+                        container.isNeedsUnpacking = true
+                        container.saveData()
+                    }
+                },
                 onDismissRequest = { hideBranchDialog(gameId) },
-                title = { Text(stringResource(R.string.change_branch)) },
-                text = {
-                    var branchExpanded by remember { mutableStateOf(false) }
-                    Column {
-                        Text(
-                            text = stringResource(R.string.change_branch_message),
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        ExposedDropdownMenuBox(
-                            expanded = branchExpanded,
-                            onExpandedChange = { branchExpanded = it },
-                        ) {
-                            OutlinedTextField(
-                                value = selectedBranch,
-                                onValueChange = {},
-                                readOnly = true,
-                                singleLine = true,
-                                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = branchExpanded) },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .menuAnchor(MenuAnchorType.PrimaryNotEditable),
-                            )
-                            ExposedDropdownMenu(
-                                expanded = branchExpanded,
-                                onDismissRequest = { branchExpanded = false },
-                            ) {
-                                availableBranches.forEach { branch ->
-                                    DropdownMenuItem(
-                                        text = { Text(branch) },
-                                        onClick = {
-                                            selectedBranch = branch
-                                            branchExpanded = false
-                                        },
-                                    )
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        OutlinedTextField(
-                            value = privateBranchPassword,
-                            onValueChange = {
-                                privateBranchPassword = it
-                                privateBranchPasswordError = false
-                                privateBranchPasswordSuccess = false
-                            },
-                            label = { Text(stringResource(R.string.private_branch_password_hint)) },
-                            singleLine = true,
-                            isError = privateBranchPasswordError,
-                            supportingText = when {
-                                privateBranchPasswordError -> ({ Text(stringResource(R.string.private_branch_password_invalid)) })
-                                privateBranchPasswordSuccess -> ({ Text(stringResource(R.string.private_branch_password_success)) })
-                                else -> null
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        Button(
-                            enabled = privateBranchPassword.isNotBlank() && !privateBranchPasswordChecking,
-                            onClick = {
-                                privateBranchPasswordChecking = true
-                                privateBranchPasswordError = false
-                                privateBranchPasswordSuccess = false
-                                coroutineScope.launch {
-                                    val result = SteamService.checkPrivateBranchPassword(gameId, privateBranchPassword)
-                                    if (result.isNotEmpty()) {
-                                        privateBranchPasswordSuccess = true
-                                        steamUnlockedBranchNames = SteamService.getSteamUnlockedBranches(gameId)
-                                            .map { it.branchName }
-                                    } else {
-                                        privateBranchPasswordError = true
-                                    }
-                                    privateBranchPasswordChecking = false
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text(stringResource(R.string.private_branch_password_check))
-                        }
-                    }
-                },
-                confirmButton = {
-                    TextButton(
-                        enabled = selectedBranch != currentBranch,
-                        onClick = {
-                            hideBranchDialog(gameId)
-                            MarkerUtils.removeMarker(getAppDirPath(gameId), Marker.STEAM_DLL_REPLACED)
-                            MarkerUtils.removeMarker(getAppDirPath(gameId), Marker.STEAM_DLL_RESTORED)
-                            MarkerUtils.removeMarker(getAppDirPath(gameId), Marker.STEAM_COLDCLIENT_USED)
-                            CoroutineScope(Dispatchers.IO).launch {
-                                val container = ContainerUtils.getOrCreateContainer(context, libraryItem.appId)
-                                val dlcAppIds = SteamService.getInstalledApp(gameId)
-                                    ?.dlcDepots.orEmpty()
-                                SteamService.downloadApp(
-                                    gameId,
-                                    dlcAppIds,
-                                    branch = selectedBranch,
-                                    isUpdateOrVerify = true,
-                                )
-                                container.isNeedsUnpacking = true
-                                container.saveData()
-                            }
-                        }
-                    ) {
-                        Text(stringResource(R.string.install))
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { hideBranchDialog(gameId) }) {
-                        Text(stringResource(R.string.cancel))
-                    }
-                },
             )
         }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SteamChangeBranchDialog(
+    availableBranches: List<String>,
+    currentBranch: String,
+    onCheckPassword: suspend (password: String) -> List<String>,
+    onConfirm: (selectedBranch: String) -> Unit,
+    onDismissRequest: () -> Unit,
+) {
+    var selectedBranch by remember { mutableStateOf(currentBranch) }
+    var privateBranchPassword by remember { mutableStateOf("") }
+    var privateBranchPasswordError by remember { mutableStateOf(false) }
+    var privateBranchPasswordSuccess by remember { mutableStateOf(false) }
+    var privateBranchPasswordChecking by remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
+
+    AlertDialog(
+        onDismissRequest = onDismissRequest,
+        title = { Text(stringResource(R.string.change_branch)) },
+        text = {
+            var branchExpanded by remember { mutableStateOf(false) }
+            Column {
+                Text(
+                    text = stringResource(R.string.change_branch_message),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                ExposedDropdownMenuBox(
+                    expanded = branchExpanded,
+                    onExpandedChange = { branchExpanded = it },
+                ) {
+                    OutlinedTextField(
+                        value = selectedBranch,
+                        onValueChange = {},
+                        readOnly = true,
+                        singleLine = true,
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = branchExpanded) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor(MenuAnchorType.PrimaryNotEditable),
+                    )
+                    ExposedDropdownMenu(
+                        expanded = branchExpanded,
+                        onDismissRequest = { branchExpanded = false },
+                    ) {
+                        availableBranches.forEach { branch ->
+                            DropdownMenuItem(
+                                text = { Text(branch) },
+                                onClick = {
+                                    selectedBranch = branch
+                                    branchExpanded = false
+                                },
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                OutlinedTextField(
+                    value = privateBranchPassword,
+                    onValueChange = {
+                        privateBranchPassword = it
+                        privateBranchPasswordError = false
+                        privateBranchPasswordSuccess = false
+                    },
+                    label = { Text(stringResource(R.string.private_branch_password_hint)) },
+                    singleLine = true,
+                    isError = privateBranchPasswordError,
+                    supportingText = when {
+                        privateBranchPasswordError -> ({ Text(stringResource(R.string.private_branch_password_invalid)) })
+                        privateBranchPasswordSuccess -> ({ Text(stringResource(R.string.private_branch_password_success)) })
+                        else -> null
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Button(
+                    enabled = privateBranchPassword.isNotBlank() && !privateBranchPasswordChecking,
+                    onClick = {
+                        privateBranchPasswordChecking = true
+                        privateBranchPasswordError = false
+                        privateBranchPasswordSuccess = false
+                        coroutineScope.launch {
+                            val result = onCheckPassword(privateBranchPassword)
+                            if (result.isNotEmpty()) {
+                                privateBranchPasswordSuccess = true
+                            } else {
+                                privateBranchPasswordError = true
+                            }
+                            privateBranchPasswordChecking = false
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(stringResource(R.string.private_branch_password_check))
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = selectedBranch != currentBranch,
+                onClick = { onConfirm(selectedBranch) },
+            ) {
+                Text(stringResource(R.string.install))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismissRequest) {
+                Text(stringResource(R.string.cancel))
+            }
+        },
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Preview(uiMode = Configuration.UI_MODE_NIGHT_YES or Configuration.UI_MODE_TYPE_NORMAL)
+@Composable
+private fun Preview_SteamChangeBranchDialog() {
+    PluviaTheme {
+        SteamChangeBranchDialog(
+            availableBranches = listOf("beta", "experimental", "public"),
+            currentBranch = "public",
+            onCheckPassword = { emptyList() },
+            onConfirm = {},
+            onDismissRequest = {},
+        )
     }
 }
