@@ -27,16 +27,82 @@ jobs:
       - name: Install CMake + Ninja
         run: sudo apt-get update -qq && sudo apt-get install -y cmake ninja-build
 
-      - name: Download vulkan_wrapper sources (Khronos)
+      # vulkan_wrapper direkt selbst schreiben – kein externer Download nötig.
+      # Der Wrapper ist ~50 Zeilen boilerplate, die immer gleich sind.
+      - name: Write vulkan_wrapper sources
+        env:
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           mkdir -p vulkan_wrapper_src
-          curl -fsSL \
-            "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Samples/main/framework/core/vulkan_wrapper.cpp" \
-            -o vulkan_wrapper_src/vulkan_wrapper.cpp
-          curl -fsSL \
-            "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Samples/main/framework/core/vulkan_wrapper.h" \
-            -o vulkan_wrapper_src/vulkan_wrapper.h
-          echo "=== Heruntergeladen ==="
+          VULKAN_H="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/vulkan/vulkan.h"
+
+          # Header – lädt Vulkan-Symbole per dlopen
+          cat > vulkan_wrapper_src/vulkan_wrapper.h << 'EOF'
+          #pragma once
+          #define VK_NO_PROTOTYPES
+          #include <vulkan/vulkan.h>
+          #include <dlfcn.h>
+
+          #ifdef __cplusplus
+          extern "C" {
+          #endif
+
+          int InitVulkan(void);
+
+          // Globale Funktionszeiger
+          extern PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;
+          extern PFN_vkCreateInstance vkCreateInstance;
+          extern PFN_vkEnumerateInstanceExtensionProperties vkEnumerateInstanceExtensionProperties;
+          extern PFN_vkEnumerateInstanceLayerProperties vkEnumerateInstanceLayerProperties;
+
+          #ifdef __cplusplus
+          }
+          #endif
+          EOF
+
+          # Implementation
+          cat > vulkan_wrapper_src/vulkan_wrapper.cpp << 'EOF'
+          #define VK_NO_PROTOTYPES
+          #include "vulkan_wrapper.h"
+          #include <android/log.h>
+          #include <dlfcn.h>
+          #include <cstdlib>
+
+          #define TAG "VulkanWrapper"
+          #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  TAG, __VA_ARGS__)
+          #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
+
+          // Globale Funktionszeiger
+          PFN_vkGetInstanceProcAddr                    vkGetInstanceProcAddr                    = nullptr;
+          PFN_vkCreateInstance                         vkCreateInstance                         = nullptr;
+          PFN_vkEnumerateInstanceExtensionProperties   vkEnumerateInstanceExtensionProperties   = nullptr;
+          PFN_vkEnumerateInstanceLayerProperties       vkEnumerateInstanceLayerProperties       = nullptr;
+
+          static void* libvulkan = nullptr;
+
+          #define LOAD_SYM(handle, name) \
+              name = reinterpret_cast<PFN_##name>(dlsym(handle, #name)); \
+              if (!name) { LOGE("Symbol nicht gefunden: %s", #name); }
+
+          int InitVulkan(void) {
+              // Reihenfolge: system libvulkan → dann Treiber-spezifisch
+              libvulkan = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
+              if (!libvulkan) {
+                  LOGE("Konnte libvulkan.so nicht laden: %s", dlerror());
+                  return 0;
+              }
+              LOGI("libvulkan.so geladen");
+
+              LOAD_SYM(libvulkan, vkGetInstanceProcAddr);
+              LOAD_SYM(libvulkan, vkCreateInstance);
+              LOAD_SYM(libvulkan, vkEnumerateInstanceExtensionProperties);
+              LOAD_SYM(libvulkan, vkEnumerateInstanceLayerProperties);
+
+              return 1;
+          }
+          EOF
+
+          echo "=== Quelldateien erstellt ==="
           ls -lh vulkan_wrapper_src/
 
       - name: Create CMakeLists.txt
