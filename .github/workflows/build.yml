@@ -1,4 +1,4 @@
-name: Build GameNative Vulkan Wrapper (ARM64)
+name: Build GameNative (libwinlator.so)
 
 on:
   push:
@@ -9,12 +9,11 @@ on:
 
 env:
   NDK_VERSION: r27c
-  ANDROID_API: 35
   ABI: arm64-v8a
 
 jobs:
-  build-vulkan-wrapper:
-    name: Build libvulkan_wrapper.so
+  build-winlator:
+    name: Build libwinlator.so
     runs-on: ubuntu-24.04
 
     steps:
@@ -30,7 +29,7 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Android NDK ${{ env.NDK_VERSION }}
+      - name: Setup Android NDK r27c
         uses: nttld/setup-ndk@v1
         id: setup-ndk
         with:
@@ -50,14 +49,15 @@ jobs:
             ~/.gradle/caches
             ~/.gradle/wrapper
             ${{ steps.setup-ndk.outputs.ndk-path }}
-          key: ${{ runner.os }}-ndk-${{ env.NDK_VERSION }}-gradle-${{ hashFiles('**/*.gradle*') }}
+          key: ${{ runner.os }}-ndk-${{ env.NDK_VERSION }}-${{ hashFiles('**/*.gradle*') }}
           restore-keys: |
             ${{ runner.os }}-ndk-${{ env.NDK_VERSION }}-
 
-      - name: Configure CMake for Vulkan Wrapper (Vulkan 1.4)
+      - name: Configure CMake
         env:
           ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
+          SYSROOT="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
           cmake \
             -S app/src/main/cpp \
             -B build/vulkan_wrapper \
@@ -69,49 +69,25 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DANDROID_NDK="$ANDROID_NDK_ROOT" \
             -DCMAKE_ANDROID_NDK="$ANDROID_NDK_ROOT" \
-            -DVULKAN_VERSION=1.4 \
-            -DANDROID_MIN_SDK_VERSION=35
+            -DCMAKE_C_FLAGS="-I$SYSROOT/usr/include/android" \
+            -DCMAKE_CXX_FLAGS="-I$SYSROOT/usr/include/android"
 
-      - name: Build libvulkan_wrapper.so
+      - name: Build libwinlator.so
         run: |
           cmake --build build/vulkan_wrapper --config Release --parallel $(nproc)
 
-      - name: Make gradlew executable
-        run: chmod +x ./gradlew
-
-      - name: Build Debug APK via Gradle
-        env:
-          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
-        run: |
-          ./gradlew assembleDebug \
-            -Pandroid.ndkVersion=${{ env.NDK_VERSION }} \
-            --no-daemon \
-            --stacktrace
-
-      - name: Collect .so and APK artifacts
+      - name: Collect .so artifacts
         run: |
           mkdir -p dist/arm64-v8a
           find build/vulkan_wrapper -name "*.so" \
             -exec cp {} dist/arm64-v8a/ \;
-          find app/build/intermediates -name "*.so" -path "*arm64-v8a*" \
-            -exec cp {} dist/arm64-v8a/ \; 2>/dev/null || true
-          find app/build/outputs/apk -name "*.apk" \
-            -exec cp {} dist/ \; 2>/dev/null || true
           echo "--- Gebaute Artefakte ---"
-          ls -lh dist/ dist/arm64-v8a/ 2>/dev/null
+          find dist/ -type f -ls
 
       - name: Upload .so as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: libvulkan_wrapper-arm64-${{ github.sha }}
+          name: libwinlator-arm64-${{ github.sha }}
           path: dist/
           retention-days: 30
           if-no-files-found: warn
-
-      - name: Upload APK as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: GameNative-debug-apk-${{ github.sha }}
-          path: dist/*.apk
-          retention-days: 30
-          if-no-files-found: ignore
