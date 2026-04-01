@@ -1,0 +1,236 @@
+name: Build GameNative – Alle Native Libraries
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  NDK_VERSION: r27c
+  ABI: arm64-v8a
+  API: 35
+
+jobs:
+  # ═══════════════════════════════════════════════════════════════
+  # JOB 1 – libwinlator.so  (dein bestehender Build, unverändert)
+  # ═══════════════════════════════════════════════════════════════
+  build-winlator:
+    name: Build libwinlator.so
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: true
+          link-to-sdk: true
+
+      - name: Install CMake + Ninja
+        run: sudo apt-get update -qq && sudo apt-get install -y cmake ninja-build
+
+      - name: Neutralize gpu_image.c
+        run: |
+          F="app/src/main/cpp/winlator/gpu_image.c"
+          [ -f "$F" ] && echo "/* deaktiviert */" > "$F"
+
+      - name: Download AOSP Headers
+        env:
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          CPP="$(pwd)/app/src/main/cpp"
+          CORE="https://raw.githubusercontent.com/aosp-mirror/platform_system_core/main"
+          NATIVE="https://raw.githubusercontent.com/aosp-mirror/platform_frameworks_native/main"
+          fetch() { mkdir -p "$(dirname $2)"; curl -fsSL "$1" -o "$2" && echo "✅ $2" || echo "⚠️ $1"; }
+          fetch "$CORE/libcutils/include/cutils/native_handle.h"      "$CPP/winlator/cutils/native_handle.h"
+          fetch "$NATIVE/libs/nativebase/include/nativebase/nativebase.h" "$CPP/winlator/nativebase/nativebase.h"
+          fetch "$NATIVE/libs/ui/include/ui/ANativeObjectBase.h"      "$CPP/winlator/ui/ANativeObjectBase.h"
+          fetch "$NATIVE/libs/ui/include/ui/GraphicBuffer.h"          "$CPP/winlator/ui/GraphicBuffer.h"
+
+      - name: CMake Configure + Build libwinlator.so
+        env:
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          SYSROOT="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          CPP="$(pwd)/app/src/main/cpp"
+          cmake -S app/src/main/cpp -B build/winlator -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=${{ env.ABI }} \
+            -DANDROID_PLATFORM=android-${{ env.API }} \
+            -DANDROID_STL=c++_shared \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DANDROID_NDK="$ANDROID_NDK_ROOT" \
+            -DCMAKE_C_FLAGS="-I$SYSROOT/usr/include/android -I$CPP/winlator -I$CPP/winlator/cutils -I$CPP/winlator/ui -I$CPP/winlator/nativebase -Wno-implicit-function-declaration" \
+            -DCMAKE_CXX_FLAGS="-I$SYSROOT/usr/include/android -I$CPP/winlator -I$CPP/winlator/cutils -I$CPP/winlator/ui -I$CPP/winlator/nativebase"
+          cmake --build build/winlator --config Release --parallel $(nproc)
+
+      - name: Collect libwinlator.so
+        run: |
+          mkdir -p dist
+          find build/winlator -name "*.so" -exec cp {} dist/ \;
+          ls -lh dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libwinlator-arm64-${{ github.sha }}
+          path: dist/
+          retention-days: 30
+
+  # ═══════════════════════════════════════════════════════════════
+  # JOB 2 – libvulkan_wrapper.so  (NDK built-in Quellcode)
+  # ═══════════════════════════════════════════════════════════════
+  build-vulkan-wrapper:
+    name: Build libvulkan_wrapper.so
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: true
+
+      - name: Install CMake + Ninja
+        run: sudo apt-get update -qq && sudo apt-get install -y cmake ninja-build
+
+      # vulkan_wrapper.cpp liegt direkt im NDK
+      - name: Create CMakeLists for vulkan_wrapper
+        env:
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          SRC="$ANDROID_NDK_ROOT/sources/third_party/vulkan/src/common"
+          mkdir -p vulkan_wrapper_build
+          cat > vulkan_wrapper_build/CMakeLists.txt << 'EOF'
+          cmake_minimum_required(VERSION 3.22)
+          project(vulkan_wrapper)
+          add_library(vulkan_wrapper SHARED
+              $ENV{NDK_VULKAN_SRC}/vulkan_wrapper.cpp)
+          target_include_directories(vulkan_wrapper PRIVATE
+              $ENV{NDK_VULKAN_SRC})
+          target_link_libraries(vulkan_wrapper
+              android log dl)
+          EOF
+
+      - name: Build libvulkan_wrapper.so
+        env:
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+          NDK_VULKAN_SRC: ${{ steps.setup-ndk.outputs.ndk-path }}/sources/third_party/vulkan/src/common
+        run: |
+          cmake -S vulkan_wrapper_build -B build/vulkan_wrapper -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=${{ env.ABI }} \
+            -DANDROID_PLATFORM=android-${{ env.API }} \
+            -DANDROID_STL=c++_shared \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/vulkan_wrapper --parallel $(nproc)
+          mkdir -p dist
+          find build/vulkan_wrapper -name "*.so" -exec cp {} dist/ \;
+          ls -lh dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libvulkan_wrapper-arm64-${{ github.sha }}
+          path: dist/
+          retention-days: 30
+
+  # ═══════════════════════════════════════════════════════════════
+  # JOB 3 – libvirglrenderer.so  (Vulkan-Relay für PowerVR)
+  # ═══════════════════════════════════════════════════════════════
+  build-virglrenderer:
+    name: Build libvirglrenderer.so (Vulkan-Relay)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: true
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build python3-pip meson
+          pip3 install meson --upgrade
+
+      # Virglrenderer Quellcode von freedesktop
+      - name: Clone virglrenderer
+        run: |
+          git clone --depth=1 \
+            https://gitlab.freedesktop.org/virgl/virglrenderer.git \
+            virglrenderer-src
+
+      - name: Create Android CMake wrapper for virglrenderer
+        env:
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          mkdir -p build/virglrenderer
+          SYSROOT="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          CLANG="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${{ env.API }}-clang"
+
+          cat > virglrenderer-src/CMakeLists.txt << EOF
+          cmake_minimum_required(VERSION 3.22)
+          project(virglrenderer C CXX)
+
+          set(VIRGL_SRC \${CMAKE_SOURCE_DIR}/src)
+
+          file(GLOB_RECURSE VIRGL_SOURCES
+            "\${VIRGL_SRC}/*.c"
+            "\${VIRGL_SRC}/*.cpp"
+          )
+
+          # gpu_image Artefakte ausschließen
+          list(FILTER VIRGL_SOURCES EXCLUDE REGEX ".*test.*")
+          list(FILTER VIRGL_SOURCES EXCLUDE REGEX ".*tools.*")
+
+          add_library(virglrenderer SHARED \${VIRGL_SOURCES})
+
+          target_include_directories(virglrenderer PRIVATE
+            \${VIRGL_SRC}
+            \${VIRGL_SRC}/gallium/include
+            \${VIRGL_SRC}/util
+          )
+
+          # ── PowerVR/Vulkan-Relay Flags ──────────────────────────
+          target_compile_definitions(virglrenderer PRIVATE
+            HAVE_CONFIG_H
+            VIRGL_RENDERER_UNSTABLE_APIS
+            VKR_RENDERER=1          # Vulkan-Relay Modus (PowerVR)
+            ENABLE_VENUS=1          # Venus-Protokoll für vkr
+          )
+
+          target_link_libraries(virglrenderer
+            android log dl vulkan)
+          EOF
+
+          cmake -S virglrenderer-src -B build/virglrenderer -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=${{ env.ABI }} \
+            -DANDROID_PLATFORM=android-${{ env.API }} \
+            -DANDROID_STL=c++_shared \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DANDROID_NDK="$ANDROID_NDK_ROOT"
+
+      - name: Build libvirglrenderer.so
+        run: |
+          cmake --build build/virglrenderer --parallel $(nproc) || true
+          mkdir -p dist
+          find build/virglrenderer -name "libvirglrenderer.so" -exec cp {} dist/ \;
+          ls -lh dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libvirglrenderer-arm64-${{ github.sha }}
+          path: dist/
+          retention-days: 30
