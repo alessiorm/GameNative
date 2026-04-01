@@ -53,11 +53,88 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-ndk-${{ env.NDK_VERSION }}-
 
+      # ──────────────────────────────────────────────────────────────
+      # Alle bekannten fehlenden Header automatisch herunterladen
+      # Quellen: AOSP platform/system/core, platform/frameworks/native,
+      #          Mesa / virglrenderer
+      # ──────────────────────────────────────────────────────────────
+      - name: Download missing headers
+        run: |
+          WINLATOR_CPP="app/src/main/cpp/winlator"
+          AOSP_CORE="https://raw.githubusercontent.com/aosp-mirror/platform_system_core/master"
+          AOSP_NATIVE="https://raw.githubusercontent.com/aosp-mirror/platform_frameworks_native/master"
+          VIRGL="https://raw.githubusercontent.com/freedesktop/virglrenderer/master/src"
+          MESA="https://raw.githubusercontent.com/mesa3d/mesa/main/src/gallium/drivers/virgl"
+
+          mkdir -p "$WINLATOR_CPP"
+
+          # Hilfsfunktion: Header laden, Fehler abfangen
+          fetch_header() {
+            local URL="$1"
+            local DEST="$2"
+            mkdir -p "$(dirname "$DEST")"
+            if curl -fsSL "$URL" -o "$DEST"; then
+              echo "✅ $(basename $DEST)"
+            else
+              echo "⚠️  NICHT GEFUNDEN: $URL"
+            fi
+          }
+
+          # ── AOSP: system/core ──────────────────────────────────
+          fetch_header \
+            "$AOSP_CORE/libutils/include/utils/native_handle.h" \
+            "$WINLATOR_CPP/native_handle.h"
+
+          fetch_header \
+            "$AOSP_CORE/libcutils/include/cutils/native_handle.h" \
+            "$WINLATOR_CPP/cutils/native_handle.h"
+
+          # ── AOSP: frameworks/native ───────────────────────────
+          fetch_header \
+            "$AOSP_NATIVE/libs/nativebase/include/nativebase/nativebase.h" \
+            "$WINLATOR_CPP/nativebase/nativebase.h"
+
+          fetch_header \
+            "$AOSP_NATIVE/libs/ui/include/ui/ANativeObjectBase.h" \
+            "$WINLATOR_CPP/ui/ANativeObjectBase.h"
+
+          fetch_header \
+            "$AOSP_NATIVE/libs/ui/include/ui/GraphicBuffer.h" \
+            "$WINLATOR_CPP/ui/GraphicBuffer.h"
+
+          # ── VirGL / Mesa ───────────────────────────────────────
+          fetch_header \
+            "$VIRGL/virgl_hw.h" \
+            "$WINLATOR_CPP/virgl_hw.h"
+
+          fetch_header \
+            "$VIRGL/virgl_protocol.h" \
+            "$WINLATOR_CPP/virgl_protocol.h"
+
+          fetch_header \
+            "$VIRGL/vkr_common.h" \
+            "$WINLATOR_CPP/vkr_common.h"
+
+          fetch_header \
+            "$MESA/virgl_context.h" \
+            "$WINLATOR_CPP/virgl_context.h"
+
+          fetch_header \
+            "$MESA/virgl_resource.h" \
+            "$WINLATOR_CPP/virgl_resource.h"
+
+          # ── Zusammenfassung ────────────────────────────────────
+          echo ""
+          echo "=== Heruntergeladene Header ==="
+          find "$WINLATOR_CPP" -name "*.h" | sort
+
       - name: Configure CMake
         env:
           ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           SYSROOT="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          CPP_DIR="$(pwd)/app/src/main/cpp"
+
           cmake \
             -S app/src/main/cpp \
             -B build/vulkan_wrapper \
@@ -69,8 +146,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DANDROID_NDK="$ANDROID_NDK_ROOT" \
             -DCMAKE_ANDROID_NDK="$ANDROID_NDK_ROOT" \
-            -DCMAKE_C_FLAGS="-I$SYSROOT/usr/include/android" \
-            -DCMAKE_CXX_FLAGS="-I$SYSROOT/usr/include/android"
+            -DCMAKE_C_FLAGS="-I$SYSROOT/usr/include/android -I$CPP_DIR/winlator -I$CPP_DIR/winlator/cutils -I$CPP_DIR/winlator/ui -I$CPP_DIR/winlator/nativebase" \
+            -DCMAKE_CXX_FLAGS="-I$SYSROOT/usr/include/android -I$CPP_DIR/winlator -I$CPP_DIR/winlator/cutils -I$CPP_DIR/winlator/ui -I$CPP_DIR/winlator/nativebase"
 
       - name: Build libwinlator.so
         run: |
@@ -81,7 +158,7 @@ jobs:
           mkdir -p dist/arm64-v8a
           find build/vulkan_wrapper -name "*.so" \
             -exec cp {} dist/arm64-v8a/ \;
-          echo "--- Gebaute Artefakte ---"
+          echo "=== Gebaute Artefakte ==="
           find dist/ -type f -ls
 
       - name: Upload .so as artifact
