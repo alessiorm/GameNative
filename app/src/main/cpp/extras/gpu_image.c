@@ -1,3 +1,4 @@
+
 #include <android/log.h>
 #include <android/hardware_buffer.h>
 #include <android/native_window.h>
@@ -56,6 +57,12 @@ EGLImageKHR createImageKHR(AHardwareBuffer* hardwareBuffer, int textureId) {
         return NULL;
     }
 
+    // FIX: Textur-Parameter gegen horizontale Ränder-Tearing-Linien (PowerVR Fix)
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
     glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, imageKHR);
     if (glGetError() != GL_NO_ERROR) {
         printf("Failed to bind EGLImage to texture\n");
@@ -75,7 +82,12 @@ AHardwareBuffer* createHardwareBuffer(int width, int height) {
     buffDesc.width = width;
     buffDesc.height = height;
     buffDesc.layers = 1;
-    buffDesc.usage = AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN;
+    
+    // FIX: COMPOSER_OVERLAY hinzugefuegt, um Hardware-VSync im SurfaceFlinger zu erzwingen
+    buffDesc.usage = AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE | 
+                     AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN | 
+                     AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY;
+                     
     buffDesc.format = HAL_PIXEL_FORMAT_BGRA_8888;
 
     AHardwareBuffer *hardwareBuffer = NULL;
@@ -91,7 +103,6 @@ AHardwareBuffer* createHardwareBuffer(int width, int height) {
 JNIEXPORT jlong JNICALL
 Java_com_winlator_renderer_GPUImage_hardwareBufferFromSocket(JNIEnv *env, jclass obj, jint fd) {
     AHardwareBuffer *ahb;
-
     uint8_t buf = 1;
 
     if ((write(fd, &buf, 1)) == -1) {
