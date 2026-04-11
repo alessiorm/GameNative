@@ -1,180 +1,54 @@
-name: Build GameNative – libvulkan_wrapper.so
+name: Android CI
 
 on:
   push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
+    branches: [ "master" ]
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+      - 'keyvalues/**'
+      - 'media/**'
+      - '.github/ISSUE_TEMPLATE/**'
   workflow_dispatch:
 
-env:
-  NDK_VERSION: r27c
-  ABI: arm64-v8a
-
 jobs:
-  build-vulkan-wrapper:
-    name: Build libvulkan_wrapper.so
-    runs-on: ubuntu-24.04
+  build:
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          fetch-depth: 0
+      - uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
+          cache: gradle
 
-      - name: Setup Android NDK ${{ env.NDK_VERSION }}
-        uses: nttld/setup-ndk@v1
-        id: setup-ndk
-        with:
-          ndk-version: ${{ env.NDK_VERSION }}
-          add-to-path: true
-          link-to-sdk: true
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
 
-      - name: Install CMake and Ninja
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Create empty local.properties
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y cmake ninja-build
+          # Alle optionalen Secrets leer lassen – build.gradle.kts hat bereits
+          # Fallbacks auf "", sodass BuildConfig.java gültiges Java erzeugt.
+          cat << 'EOF' > local.properties
+          POSTHOG_API_KEY=
+          POSTHOG_HOST=
+          STEAMGRIDDB_API_KEY=
+          CLOUD_PROJECT_NUMBER=
+          EOF
 
-      - name: Cache NDK & Gradle
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-            ${{ steps.setup-ndk.outputs.ndk-path }}
-          key: ${{ runner.os }}-ndk-${{ env.NDK_VERSION }}-${{ hashFiles('**/*.gradle*') }}
-          restore-keys: |
-            ${{ runner.os }}-ndk-${{ env.NDK_VERSION }}-
+      - name: Build APK (Release)
+        run: ./gradlew :app:assembleRelease
 
-      # ─────────────────────────────────────────────────────────────
-      # gpu_image.c enthält Ghidra-Decompiler-Artefakte (undefined8,
-      # tpidr_el0 etc.) → temporär neutralisieren damit der Rest baut
-      # ─────────────────────────────────────────────────────────────
-      - name: Neutralize gpu_image.c (Ghidra artifacts)
-        run: |
-          GPU_IMAGE="app/src/main/cpp/winlator/gpu_image.c"
-          if [ -f "$GPU_IMAGE" ]; then
-            echo "/* gpu_image.c temporaer deaktiviert – enthaelt Ghidra-Artefakte */" \
-              > "$GPU_IMAGE"
-            echo "Datei neutralisiert: $GPU_IMAGE"
-          fi
-
-      # ─────────────────────────────────────────────────────────────
-      # Korrekte Header-Quellen (verifizierte URLs April 2026)
-      # ─────────────────────────────────────────────────────────────
-      - name: Download missing AOSP headers
-        env:
-          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
-        run: |
-          CPP_DIR="$(pwd)/app/src/main/cpp"
-          AOSP_NATIVE="https://raw.githubusercontent.com/aosp-mirror/platform_frameworks_native/main"
-          AOSP_CORE="https://raw.githubusercontent.com/aosp-mirror/platform_system_core/main"
-          # virglrenderer ist jetzt auf freedesktop GitLab
-          VIRGL="https://gitlab.freedesktop.org/virgl/virglrenderer/-/raw/main/src"
-
-          fetch() {
-            local URL="$1" DEST="$2"
-            mkdir -p "$(dirname "$DEST")"
-            if curl -fsSL "$URL" -o "$DEST"; then
-              echo "✅ $DEST"
-            else
-              echo "⚠️  Nicht gefunden (übersprungen): $URL"
-            fi
-          }
-
-          # native_handle.h – NDK sysroot hat meist schon eine Version
-          SYSROOT="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
-          cp "$SYSROOT/usr/include/android/hardware_buffer.h" \
-             "$CPP_DIR/winlator/hardware_buffer.h" 2>/dev/null || true
-
-          # cutils/native_handle.h (bereits erfolgreich in deinem Log!)
-          fetch \
-            "$AOSP_CORE/libcutils/include/cutils/native_handle.h" \
-            "$CPP_DIR/winlator/cutils/native_handle.h"
-
-          # nativebase
-          fetch \
-            "$AOSP_NATIVE/libs/nativebase/include/nativebase/nativebase.h" \
-            "$CPP_DIR/winlator/nativebase/nativebase.h"
-
-          # ui-Headers
-          fetch \
-            "$AOSP_NATIVE/libs/ui/include/ui/ANativeObjectBase.h" \
-            "$CPP_DIR/winlator/ui/ANativeObjectBase.h"
-
-          fetch \
-            "$AOSP_NATIVE/libs/ui/include/ui/GraphicBuffer.h" \
-            "$CPP_DIR/winlator/ui/GraphicBuffer.h"
-
-          # virglrenderer (freedesktop GitLab)
-          fetch "$VIRGL/virgl_hw.h"           "$CPP_DIR/winlator/virgl_hw.h"
-          fetch "$VIRGL/virgl_protocol.h"     "$CPP_DIR/winlator/virgl_protocol.h"
-
-          echo ""
-          echo "=== Vorhandene Header ==="
-          find "$CPP_DIR/winlator" -name "*.h" | sort
-
-      # ─────────────────────────────────────────────────────────────
-      # CMake konfigurieren
-      # ─────────────────────────────────────────────────────────────
-      - name: Configure CMake
-        env:
-          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
-        run: |
-          SYSROOT="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
-          CPP_DIR="$(pwd)/app/src/main/cpp"
-
-          cmake \
-            -S app/src/main/cpp \
-            -B build/vulkan_wrapper \
-            -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI=${{ env.ABI }} \
-            -DANDROID_PLATFORM=android-35 \
-            -DANDROID_STL=c++_shared \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DANDROID_NDK="$ANDROID_NDK_ROOT" \
-            -DCMAKE_ANDROID_NDK="$ANDROID_NDK_ROOT" \
-            -DCMAKE_C_FLAGS="\
-              -I$SYSROOT/usr/include/android \
-              -I$CPP_DIR/winlator \
-              -I$CPP_DIR/winlator/cutils \
-              -I$CPP_DIR/winlator/ui \
-              -I$CPP_DIR/winlator/nativebase \
-              -Wno-implicit-function-declaration \
-              -Wno-error=implicit-function-declaration" \
-            -DCMAKE_CXX_FLAGS="\
-              -I$SYSROOT/usr/include/android \
-              -I$CPP_DIR/winlator \
-              -I$CPP_DIR/winlator/cutils \
-              -I$CPP_DIR/winlator/ui \
-              -I$CPP_DIR/winlator/nativebase"
-
-      - name: Build
-        run: cmake --build build/vulkan_wrapper --config Release --parallel $(nproc)
-
-      # ─────────────────────────────────────────────────────────────
-      # Artefakte sammeln und hochladen
-      # ─────────────────────────────────────────────────────────────
-      - name: Collect .so files
-        run: |
-          mkdir -p dist/arm64-v8a
-          find build/vulkan_wrapper -name "*.so" \
-            -exec cp {} dist/arm64-v8a/ \;
-          echo "--- Gebaute .so Dateien ---"
-          ls -lh dist/arm64-v8a/
-
-      - name: Upload .so artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: libvulkan_wrapper-arm64-${{ github.sha }}
-          path: dist/
+          name: app-release-${{ github.sha }}
+          path: app/build/outputs/apk/release/app-release-unsigned.apk
           retention-days: 30
-          if-no-files-found: warn
+          if-no-files-found: error
