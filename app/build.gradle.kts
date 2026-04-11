@@ -30,12 +30,10 @@ android {
     // [https://developer.android.com/ndk/downloads](https://developer.android.com/ndk/downloads)
     ndkVersion = "22.1.7171670"
 
-    // ──────────────────────────────────────────────────────────────
-    // FIX: values-ru/strings.xml enthält Library-Strings, die nicht
-    // in der Default-Locale existieren → ExtraTranslation deaktivieren
-    // ──────────────────────────────────────────────────────────────
     lint {
         disable += "ExtraTranslation"
+        // targetSdk 28 is intentional – this is a sideloaded APK, not a Play Store release
+        disable += "ExpiredTargetSdkVersion"
     }
 
     signingConfigs {
@@ -184,7 +182,6 @@ android {
             isIncludeAndroidResources = true
         }
     }
-    dynamicFeatures += setOf(":ubuntufs")
 
     kotlinter {
         ignoreFormatFailures  = false
@@ -213,9 +210,6 @@ dependencies {
     }
     implementation(libs.spongycastle)
     implementation(libs.okhttp.dnsoverhttps)
-
-    // Split Modules
-    implementation(libs.bundles.google)
 
     // Winlator
     implementation(libs.bundles.winlator)
