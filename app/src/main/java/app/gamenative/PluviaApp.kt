@@ -1,5 +1,6 @@
 package app.gamenative
 
+import android.app.Application
 import android.os.StrictMode
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -16,7 +17,6 @@ import app.gamenative.utils.PlayIntegrity
 import java.io.File
 import javax.inject.Inject
 import kotlinx.coroutines.runBlocking
-import com.google.android.play.core.splitcompat.SplitCompatApplication
 import com.posthog.PersonProfiles
 
 // Add PostHog imports
@@ -39,7 +39,7 @@ import timber.log.Timber
 typealias NavChangedListener = NavController.OnDestinationChangedListener
 
 @HiltAndroidApp
-class PluviaApp : SplitCompatApplication() {
+class PluviaApp : Application() {
 
     @Inject lateinit var gogGameDao: GOGGameDao
     @Inject lateinit var amazonGameDao: AmazonGameDao
