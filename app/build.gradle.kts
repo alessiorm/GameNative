@@ -194,6 +194,11 @@ dependencies {
     // Chrome Custom Tabs for GOG OAuth
     implementation("androidx.browser:browser:1.8.0")
 
+    // Google Play Core (SplitCompat + Play Integrity)
+    implementation("com.google.android.play:app-update:2.1.0")
+    implementation("com.google.android.play:integrity:1.4.0")
+    implementation("com.google.android.play:feature-delivery:2.1.0")
+
     // JavaSteam
     val localBuild = false // Change to 'true' needed when building JavaSteam manually
     if (localBuild) {
