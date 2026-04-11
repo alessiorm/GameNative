@@ -27,8 +27,16 @@ android {
     namespace = "app.gamenative"
     compileSdk = 35
 
-    // https://developer.android.com/ndk/downloads
+    // [https://developer.android.com/ndk/downloads](https://developer.android.com/ndk/downloads)
     ndkVersion = "22.1.7171670"
+
+    // ──────────────────────────────────────────────────────────────
+    // FIX: values-ru/strings.xml enthält Library-Strings, die nicht
+    // in der Default-Locale existieren → ExtraTranslation deaktivieren
+    // ──────────────────────────────────────────────────────────────
+    lint {
+        disable += "ExtraTranslation"
+    }
 
     signingConfigs {
         create("pluvia") {
@@ -181,38 +189,6 @@ android {
     kotlinter {
         ignoreFormatFailures  = false
     }
-
-    // xconnectorpatch is shipped as a prebuilt jniLib because our APK packaging flow
-    // does not rebuild native libraries during release creation.
-    // externalNativeBuild {
-    //     cmake {
-    //         path = file("src/main/cpp/xconnectorpatch/CMakeLists.txt")
-    //         version = "3.22.1"
-    //     }
-    // }
-
-    // build extras needed in libwinlator_bionic.so
-    // externalNativeBuild {
-    //     cmake {
-    //         path = file("src/main/cpp/extras/CMakeLists.txt")   // the file shown above
-    //         version = "3.22.1"
-    //     }
-    // }
-
-    // cmake on release builds a proot that fails to process ld-2.31.so
-    // externalNativeBuild {
-    //     cmake {
-    //         path = file("src/main/cpp/CMakeLists.txt")
-    //         version = "3.22.1"
-    //     }
-    // }
-
-    // (For now) Uncomment for LeakCanary to work.
-    // configurations {
-    //     debugImplementation {
-    //         exclude(group = "junit", module = "junit")
-    //     }
-    // }
 }
 
 dependencies {
