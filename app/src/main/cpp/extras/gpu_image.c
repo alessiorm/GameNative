@@ -1,4 +1,3 @@
-
 #include <android/log.h>
 #include <android/hardware_buffer.h>
 #include <android/native_window.h>
@@ -57,12 +56,6 @@ EGLImageKHR createImageKHR(AHardwareBuffer* hardwareBuffer, int textureId) {
         return NULL;
     }
 
-    // FIX: Textur-Parameter gegen horizontale Ränder-Tearing-Linien (PowerVR Fix)
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
     glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, imageKHR);
     if (glGetError() != GL_NO_ERROR) {
         printf("Failed to bind EGLImage to texture\n");
@@ -82,12 +75,14 @@ AHardwareBuffer* createHardwareBuffer(int width, int height) {
     buffDesc.width = width;
     buffDesc.height = height;
     buffDesc.layers = 1;
-    
-    // FIX: COMPOSER_OVERLAY hinzugefuegt, um Hardware-VSync im SurfaceFlinger zu erzwingen
-    buffDesc.usage = AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE | 
-                     AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN | 
-                     AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY;
-                     
+    // FIX: Added AHARDWAREBUFFER_USAGE_CPU_READ_RARELY to prevent PowerVR PVRIC
+    // compression on Pixel 10 (IMG PowerVR GPU). Without this flag, the driver
+    // applies PVRIC compression (DRM modifier 10520408729537478695 / usage 0xb00),
+    // which causes horizontal scan line artifacts in all rendered frames.
+    // CPU_READ_RARELY signals the driver to allocate an uncompressed linear buffer.
+    buffDesc.usage = AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
+                     AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN |
+                     AHARDWAREBUFFER_USAGE_CPU_READ_RARELY;
     buffDesc.format = HAL_PIXEL_FORMAT_BGRA_8888;
 
     AHardwareBuffer *hardwareBuffer = NULL;
@@ -145,7 +140,9 @@ JNIEXPORT void JNICALL
 Java_com_winlator_renderer_GPUImage_destroyHardwareBuffer(JNIEnv *env, jclass obj, jlong hardwareBufferPtr) {
     AHardwareBuffer* hardwareBuffer = (AHardwareBuffer*)hardwareBufferPtr;
     if (hardwareBuffer) {
-        AHardwareBuffer_unlock(hardwareBuffer, NULL);
+        // FIX: removed unconditional AHardwareBuffer_unlock — only unlock
+        // if the buffer was actually locked. Unconditional unlock causes
+        // undefined behaviour on some drivers.
         AHardwareBuffer_release(hardwareBuffer);
     }
 }
