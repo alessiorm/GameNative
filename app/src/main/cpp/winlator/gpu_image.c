@@ -73,46 +73,20 @@ EGLImageKHR createImageKHR(AHardwareBuffer* hardwareBuffer, int textureId) {
     return imageKHR;
 }
 
-
-long createImageKHR(undefined8 param_1,undefined4 param_2)
-
-{
-    long lVar1;
-    long lVar2;
-    undefined8 uVar3;
-    undefined8 local_48;
-    undefined4 local_40;
-    long local_38;
-
-    lVar1 = tpidr_el0;
-    local_38 = *(long *)(lVar1 + 0x28);
-    local_48 = 0x1000030d2;
-    local_40 = 0x3038;
-    AHardwareBuffer_acquire();
-    lVar2 = eglGetNativeClientBufferANDROID(param_1);
-    if (lVar2 != 0) {
-        uVar3 = eglGetDisplay(0);
-        lVar2 = eglCreateImageKHR(uVar3,0,0x3140,lVar2,&local_48);
-        if (lVar2 != 0) {
-            glBindTexture(0xde1,param_2);
-            glEGLImageTargetTexture2DOES(0xde1,lVar2);
-            glBindTexture(0xde1,0);
-        }
-    }
-    if (*(long *)(lVar1 + 0x28) == local_38) {
-        return lVar2;
-    }
-    /* WARNING: Subroutine does not return */
-    __stack_chk_fail();
-}
-
 // Function to create a hardware buffer
 AHardwareBuffer* createHardwareBuffer(int width, int height, bool cpuAccess, bool useHALPixelFormatBGRA8888) {
     AHardwareBuffer_Desc buffDesc = {0};
     buffDesc.width = width;
     buffDesc.height = height;
     buffDesc.layers = 1;
-    buffDesc.usage = cpuAccess ? AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN : AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT;
+    // FIX: Added AHARDWAREBUFFER_USAGE_CPU_READ_RARELY to both branches to prevent
+    // PowerVR PVRIC compression on Pixel 10 (IMG PowerVR GPU).
+    // Without this flag the driver applies PVRIC compression (DRM modifier
+    // 10520408729537478695 / usage 0xb00), causing horizontal scan line artifacts.
+    // CPU_READ_RARELY signals the driver to allocate an uncompressed linear buffer.
+    buffDesc.usage = cpuAccess
+        ? (AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN | AHARDWAREBUFFER_USAGE_CPU_READ_RARELY)
+        : (AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT | AHARDWAREBUFFER_USAGE_CPU_READ_RARELY);
     buffDesc.format = useHALPixelFormatBGRA8888 ? HAL_PIXEL_FORMAT_BGRA_8888 : HAL_PIXEL_FORMAT_RGBA_8888;
 
     AHardwareBuffer *hardwareBuffer = NULL;
@@ -127,43 +101,36 @@ AHardwareBuffer* createHardwareBuffer(int width, int height, bool cpuAccess, boo
 // JNI method to create a hardware buffer
 JNIEXPORT jlong JNICALL
 Java_com_winlator_renderer_GPUImage_createHardwareBuffer(JNIEnv *env,
-                                                         jobject  obj,     // ‘this’
+                                                         jobject  obj,
                                                          jshort   width,
                                                          jshort   height,
                                                          jboolean cpuAccess,
                                                          jboolean useBGRA8888)
 {
-    /* Allocate the buffer */
     AHardwareBuffer* buffer = createHardwareBuffer(
             (int)width,
             (int)height,
             cpuAccess  == JNI_TRUE,
             useBGRA8888 == JNI_TRUE);
 
-    if (!buffer) {                       // allocation failed → null pointer
+    if (!buffer) {
         return 0;
     }
 
-    /* ------------------------------------------------------------------
-     * Pass metadata back to Java
-     * ------------------------------------------------------------------ */
     jclass cls = (*env)->GetObjectClass(env, obj);
 
-    /* 1. Stride */
     AHardwareBuffer_Desc desc;
-    AHardwareBuffer_describe(buffer, &desc);          // fills ‘desc’ :contentReference[oaicite:0]{index=0}
+    AHardwareBuffer_describe(buffer, &desc);
 
     jmethodID midStride = (*env)->GetMethodID(env, cls, "setStride", "(S)V");
     (*env)->CallVoidMethod(env, obj, midStride, (jshort)desc.stride);
 
-    /* 2. Native handle (fd 0) if present */
     const native_handle_t* handle = AHardwareBuffer_getNativeHandle(buffer);
     if (handle && handle->numFds > 0 && handle->data[0] != -1) {
         jmethodID midHandle = (*env)->GetMethodID(env, cls, "setNativeHandle", "(I)V");
         (*env)->CallVoidMethod(env, obj, midHandle, handle->data[0]);
     }
 
-    /* Return the native pointer as jlong */
     return (jlong)buffer;
 }
 
@@ -186,7 +153,6 @@ Java_com_winlator_renderer_GPUImage_destroyHardwareBuffer(JNIEnv *env, jclass ob
     if (hardwareBuffer) {
         if (locked) {
             AHardwareBuffer_unlock(hardwareBuffer, NULL);
-            locked = false;
         }
         AHardwareBuffer_release(hardwareBuffer);
     }
@@ -241,8 +207,6 @@ int32_t AHardwareBuffer_getFd(const AHardwareBuffer *buffer)
 
 int32_t createMemoryFd(const char *name, off_t size)
 {
-    /* Fallback to direct syscall because bionic’s <sys/memfd.h> is
-       available only from API-30 upward. */
     int32_t fd = (int32_t)syscall(__NR_memfd_create, name, MFD_CLOEXEC);
     if (fd == -1) return -1;
 
