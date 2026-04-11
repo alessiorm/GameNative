@@ -9,7 +9,6 @@ plugins {
     alias(libs.plugins.jetbrains.serialization)
     alias(libs.plugins.kotlinter)
     alias(libs.plugins.ksp)
-    alias(libs.plugins.secrets.gradle)
     alias(libs.plugins.room)
 }
 
@@ -19,10 +18,6 @@ val keystoreProperties: Properties? = if (keystorePropertiesFile.exists()) {
         load(FileInputStream(keystorePropertiesFile))
     }
 } else null
-
-// Add PostHog API key and host as build-time variables
-val posthogApiKey: String = project.findProperty("POSTHOG_API_KEY") as String? ?: System.getenv("POSTHOG_API_KEY") ?: ""
-val posthogHost: String = project.findProperty("POSTHOG_HOST") as String? ?: System.getenv("POSTHOG_HOST") ?: "https://us.i.posthog.com"
 
 room {
     schemaDirectory("$projectDir/schemas")
@@ -56,13 +51,21 @@ android {
         versionName = "0.9.0"
 
         buildConfigField("boolean", "GOLD", "false")
-        fun secret(name: String) =
-            project.findProperty(name) as String? ?: System.getenv(name) ?: ""
 
-        buildConfigField("String", "POSTHOG_API_KEY", "\"${secret("POSTHOG_API_KEY")}\"")
-        buildConfigField("String", "POSTHOG_HOST",  "\"${secret("POSTHOG_HOST")}\"")
-        buildConfigField("String", "STEAMGRIDDB_API_KEY", "\"${secret("STEAMGRIDDB_API_KEY")}\"")
-        buildConfigField("String", "CLOUD_PROJECT_NUMBER", "\"${secret("CLOUD_PROJECT_NUMBER")}\"")
+        // Reads from gradle.properties, env vars, or falls back to ""
+        // Always wrapped in quotes → always valid Java String literal
+        fun secret(name: String): String {
+            val value = project.findProperty(name) as String?
+                ?: System.getenv(name)
+                ?: ""
+            return "\"$value\""
+        }
+
+        buildConfigField("String", "POSTHOG_API_KEY",      secret("POSTHOG_API_KEY"))
+        buildConfigField("String", "POSTHOG_HOST",         secret("POSTHOG_HOST"))
+        buildConfigField("String", "STEAMGRIDDB_API_KEY",  secret("STEAMGRIDDB_API_KEY"))
+        buildConfigField("String", "CLOUD_PROJECT_NUMBER", secret("CLOUD_PROJECT_NUMBER"))
+
         val iconValue = "@mipmap/ic_launcher"
         val iconRoundValue = "@mipmap/ic_launcher_round"
         manifestPlaceholders.putAll(
